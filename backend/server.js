@@ -8,43 +8,42 @@ const { extractClickMetadata } = require("./clickTracking");
 const { getCachedUrl, setCachedUrl, deleteCachedUrl, isRedisConnected } = require("./redis");
 const { addClickJob } = require("./jobs/queue");
 const { checkUrlSafety } = require("./services/maliciousUrl");
-const { registerApiKeyRoutes, requireApiKey } = require("./services/apiKey");
-const { registerTeamRoutes } = require("./services/teamService");
-const { generalRateLimiter, createLinkLimiter, apiV1Limiter } = require("./middleware/rateLimiter");
+const { generalRateLimiter, createLinkLimiter } = require("./middleware/rateLimiter");
 const { validateBody, shortenSchema, updateLinkSchema } = require("./middleware/validate");
-const { logAuditEvent } = require("./middleware/audit");
-const { register, httpRequestsTotal, redirectRequestsTotal, linksCreatedTotal, httpRequestDurationSeconds } = require("./metrics");
 const logger = require("./logger");
 
 const app = express();
 
-// Trust proxy for IP rate limiting & GeoIP lookup behind Nginx
+// Trust proxy for IP rate limiting & GeoIP lookup behind reverse proxies
 app.set("trust proxy", 1);
 
 app.use(express.json({ limit: "2mb" }));
 app.use(cors());
 
-// Prometheus request duration middleware
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on("finish", () => {
-    const duration = (Date.now() - start) / 1000;
-    const route = req.route ? req.route.path : req.path;
-    httpRequestsTotal.inc({ method: req.method, route, status_code: res.statusCode });
-    httpRequestDurationSeconds.observe({ method: req.method, route, status_code: res.statusCode }, duration);
-  });
-  next();
-});
-
 const PORT = process.env.PORT || 5000;
 
-// Register Authentication & Module Routes
+// Register Authentication Routes
 registerAuthRoutes(app, pool);
-registerApiKeyRoutes(app);
-registerTeamRoutes(app);
 
 // Apply General Rate Limiter to public API routes
 app.use("/api/", generalRateLimiter);
+
+/**
+ * Helper: Resolve Base URL from Environment Variable or Request Headers
+ */
+function getBaseUrl(req) {
+  if (process.env.BASE_URL) {
+    return process.env.BASE_URL.replace(/\/$/, "");
+  }
+  return `${req.protocol}://${req.get("host")}`;
+}
+
+/**
+ * Helper: Validate URL Alias format
+ */
+function isValidAlias(value) {
+  return /^[a-zA-Z0-9_-]{3,32}$/.test(value);
+}
 
 /**
  * GET /health - Observability Health Check
@@ -67,38 +66,9 @@ app.get("/health", async (req, res) => {
 });
 
 /**
- * GET /metrics - Prometheus Metrics Endpoint
- */
-app.get("/metrics", async (req, res) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (err) {
-    res.status(500).end(err);
-  }
-});
-
-/**
- * Helper: Resolve Base URL from Environment Variable or Request Headers
- */
-function getBaseUrl(req) {
-  if (process.env.BASE_URL) {
-    return process.env.BASE_URL.replace(/\/$/, "");
-  }
-  return `${req.protocol}://${req.get("host")}`;
-}
-
-/**
- * Helper: Validate URL Alias format
- */
-function isValidAlias(value) {
-  return /^[a-zA-Z0-9_-]{3,32}$/.test(value);
-}
-
-/**
  * Helper: Core Link Shortening Function
  */
-async function shortenUrlCore({ url, alias, expires_at, is_private, domain, userId, teamId, source = "web" }) {
+async function shortenUrlCore({ url, alias, expires_at, is_private, domain, userId, source = "web" }) {
   // Security & Safety Check
   const safety = checkUrlSafety(url);
   if (!safety.safe) {
@@ -117,7 +87,6 @@ async function shortenUrlCore({ url, alias, expires_at, is_private, domain, user
   try {
     await client.query("BEGIN");
     let shortCode;
-
     let linkRowId = null;
 
     if (customAlias) {
@@ -128,16 +97,16 @@ async function shortenUrlCore({ url, alias, expires_at, is_private, domain, user
       }
       shortCode = customAlias;
       const insertRes = await client.query(
-        `INSERT INTO urls (original_url, short_code, user_id, team_id, expires_at, is_private, domain)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [url, shortCode, userId || null, teamId || null, expires_at || null, Boolean(is_private), domain || null]
+        `INSERT INTO urls (original_url, short_code, user_id, expires_at, is_private, domain)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [url, shortCode, userId || null, expires_at || null, Boolean(is_private), domain || null]
       );
       linkRowId = insertRes.rows[0].id;
     } else {
       const existing = await client.query(
         `SELECT id, short_code FROM urls
-         WHERE original_url = $1 AND short_code IS NOT NULL AND user_id IS NOT DISTINCT FROM $2 AND team_id IS NOT DISTINCT FROM $3`,
-        [url, userId || null, teamId || null]
+         WHERE original_url = $1 AND short_code IS NOT NULL AND user_id IS NOT DISTINCT FROM $2`,
+        [url, userId || null]
       );
 
       if (existing.rows.length > 0) {
@@ -145,9 +114,9 @@ async function shortenUrlCore({ url, alias, expires_at, is_private, domain, user
         linkRowId = existing.rows[0].id;
       } else {
         const insertResult = await client.query(
-          `INSERT INTO urls (original_url, user_id, team_id, expires_at, is_private, domain)
-           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-          [url, userId || null, teamId || null, expires_at || null, Boolean(is_private), domain || null]
+          `INSERT INTO urls (original_url, user_id, expires_at, is_private, domain)
+           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [url, userId || null, expires_at || null, Boolean(is_private), domain || null]
         );
         linkRowId = insertResult.rows[0].id;
         shortCode = encode(linkRowId);
@@ -157,18 +126,13 @@ async function shortenUrlCore({ url, alias, expires_at, is_private, domain, user
 
     await client.query("COMMIT");
 
-    // Seed Redis Cache with link ID
+    // Seed Redis Cache with link ID for sub-5ms lookup
     await setCachedUrl(shortCode, {
       id: linkRowId,
       original_url: url,
       is_active: true,
       expires_at: expires_at || null,
     });
-
-    linksCreatedTotal.inc({ source });
-    if (userId) {
-      await logAuditEvent(userId, "create_link", "url", shortCode, { original_url: url, custom_alias: Boolean(customAlias) });
-    }
 
     return shortCode;
   } catch (err) {
@@ -180,11 +144,10 @@ async function shortenUrlCore({ url, alias, expires_at, is_private, domain, user
 }
 
 /**
- * POST /api/shorten
- * Shorten link endpoint (Web UI)
+ * POST /api/shorten - Shorten link endpoint (Web UI)
  */
 app.post("/api/shorten", createLinkLimiter, optionalAuth, validateBody(shortenSchema), async (req, res) => {
-  const { url, alias, expires_at, is_private, domain, team_id } = req.body;
+  const { url, alias, expires_at, is_private, domain } = req.body;
   const userId = req.user ? req.user.id : null;
 
   try {
@@ -195,7 +158,6 @@ app.post("/api/shorten", createLinkLimiter, optionalAuth, validateBody(shortenSc
       is_private,
       domain,
       userId,
-      teamId: team_id,
       source: "web",
     });
 
@@ -217,45 +179,10 @@ app.post("/api/shorten", createLinkLimiter, optionalAuth, validateBody(shortenSc
 });
 
 /**
- * POST /api/v1/links - Developer API Endpoint
- * Protected by Bearer API_KEY
- */
-app.post("/api/v1/links", apiV1Limiter, requireApiKey, validateBody(shortenSchema), async (req, res) => {
-  const { url, alias, expires_at, is_private, domain } = req.body;
-  const userId = req.user.id;
-
-  try {
-    const shortCode = await shortenUrlCore({
-      url,
-      alias,
-      expires_at,
-      is_private,
-      domain,
-      userId,
-      source: "api",
-    });
-
-    res.status(201).json({
-      id: shortCode,
-      short_code: shortCode,
-      original_url: url,
-      short_url: `${getBaseUrl(req)}/${shortCode}`,
-      created_at: new Date().toISOString(),
-    });
-  } catch (err) {
-    if (err.status) {
-      return res.status(err.status).json({ error: err.message });
-    }
-    logger.error("API v1 create link error", err);
-    res.status(500).json({ error: "Failed to generate short link via API" });
-  }
-});
-
-/**
- * POST /api/links/bulk - Bulk Link Creation (CSV/Array)
+ * POST /api/links/bulk - Bulk Link Creation (CSV / Batch Array)
  */
 app.post("/api/links/bulk", createLinkLimiter, requireAuth, async (req, res) => {
-  const { links } = req.body; // Array of { url, alias }
+  const { links } = req.body;
   if (!Array.isArray(links) || links.length === 0) {
     return res.status(400).json({ error: "Request body must contain an array 'links'" });
   }
@@ -290,8 +217,6 @@ app.post("/api/links/bulk", createLinkLimiter, requireAuth, async (req, res) => 
     }
   }
 
-  await logAuditEvent(req.user.id, "bulk_create_links", "urls", null, { total: links.length, successful: results.length });
-
   res.status(200).json({
     created_count: results.length,
     failed_count: errors.length,
@@ -304,24 +229,15 @@ app.post("/api/links/bulk", createLinkLimiter, requireAuth, async (req, res) => 
  * GET /api/my-links - Protected user links dashboard list
  */
 app.get("/api/my-links", requireAuth, async (req, res) => {
-  const teamId = req.query.team_id ? parseInt(req.query.team_id, 10) : null;
   const search = req.query.search ? `%${req.query.search.trim()}%` : null;
 
   try {
     let query = `
       SELECT id, original_url, short_code, clicks, qr_scans, is_active, is_private, expires_at, created_at
       FROM urls
-      WHERE short_code IS NOT NULL
+      WHERE user_id = $1 AND short_code IS NOT NULL
     `;
-    const params = [];
-
-    if (teamId) {
-      params.push(teamId);
-      query += ` AND team_id = $${params.length}`;
-    } else {
-      params.push(req.user.id);
-      query += ` AND user_id = $${params.length}`;
-    }
+    const params = [req.user.id];
 
     if (search) {
       params.push(search);
@@ -353,7 +269,38 @@ app.get("/api/my-links", requireAuth, async (req, res) => {
 });
 
 /**
- * PUT /api/links/:id - Update link parameters (URL, active toggle, expiration)
+ * GET /api/links - Public recent links list (unauthenticated fallback)
+ */
+app.get("/api/links", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, original_url, short_code, clicks, qr_scans, is_active, expires_at, created_at
+       FROM urls
+       WHERE short_code IS NOT NULL AND is_private = FALSE
+       ORDER BY created_at DESC LIMIT 10`
+    );
+
+    res.status(200).json({
+      links: result.rows.map((row) => ({
+        id: row.id,
+        original_url: row.original_url,
+        short_code: row.short_code,
+        clicks: row.clicks,
+        qr_scans: row.qr_scans,
+        is_active: row.is_active,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        short_url: `${getBaseUrl(req)}/${row.short_code}`,
+      })),
+    });
+  } catch (err) {
+    logger.error("Failed to fetch public links", err);
+    res.status(500).json({ error: "Failed to load public links" });
+  }
+});
+
+/**
+ * PUT /api/links/:id - Update link parameters
  */
 app.put("/api/links/:id", requireAuth, validateBody(updateLinkSchema), async (req, res) => {
   const { id } = req.params;
@@ -400,11 +347,9 @@ app.put("/api/links/:id", requireAuth, validateBody(updateLinkSchema), async (re
     if (updates.length > 0) {
       params.push(id);
       await pool.query(`UPDATE urls SET ${updates.join(", ")} WHERE id = $${params.length}`, params);
-      // Invalidate Redis cache
       await deleteCachedUrl(link.short_code);
     }
 
-    await logAuditEvent(req.user.id, "update_link", "url", link.short_code, { updates: req.body });
     res.status(200).json({ message: "Link updated successfully" });
   } catch (err) {
     logger.error("Failed to update link", err);
@@ -432,7 +377,6 @@ app.delete("/api/links/:id", requireAuth, async (req, res) => {
     await pool.query("DELETE FROM urls WHERE id = $1", [id]);
     await deleteCachedUrl(link.short_code);
 
-    await logAuditEvent(req.user.id, "delete_link", "url", link.short_code);
     res.status(200).json({ message: "Link deleted successfully" });
   } catch (err) {
     logger.error("Failed to delete link", err);
@@ -566,25 +510,6 @@ app.get("/api/summary", optionalAuth, async (req, res) => {
 });
 
 /**
- * GET /api/audit-logs - View User Security Audit History
- */
-app.get("/api/audit-logs", requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, action, target_type, target_id, details, created_at
-       FROM audit_logs
-       WHERE user_id = $1
-       ORDER BY created_at DESC LIMIT 50`,
-      [req.user.id]
-    );
-    res.status(200).json({ logs: result.rows });
-  } catch (err) {
-    logger.error("Failed to fetch audit logs", err);
-    res.status(500).json({ error: "Failed to load security audit logs" });
-  }
-});
-
-/**
  * GET /:shortCode - High Speed Short Link Redirect (<5ms with Redis)
  */
 app.get("/:shortCode", async (req, res) => {
@@ -593,20 +518,16 @@ app.get("/:shortCode", async (req, res) => {
   try {
     let targetUrl = null;
     let linkId = null;
-    let cacheHit = false;
 
     // 1. Check Redis Cache
     const cached = await getCachedUrl(shortCode);
 
     if (cached) {
-      cacheHit = true;
       linkId = cached.id || null;
       if (!cached.is_active) {
-        redirectRequestsTotal.inc({ status: "disabled", cache_hit: "true" });
         return res.status(410).send("This short link has been disabled.");
       }
       if (cached.expires_at && new Date(cached.expires_at) <= new Date()) {
-        redirectRequestsTotal.inc({ status: "expired", cache_hit: "true" });
         return res.status(410).send("This short link has expired.");
       }
       targetUrl = cached.original_url;
@@ -620,7 +541,6 @@ app.get("/:shortCode", async (req, res) => {
       );
 
       if (result.rows.length === 0) {
-        redirectRequestsTotal.inc({ status: "not_found", cache_hit: "false" });
         return res.status(404).send("Short URL not found.");
       }
 
@@ -628,12 +548,10 @@ app.get("/:shortCode", async (req, res) => {
       linkId = row.id;
 
       if (!row.is_active) {
-        redirectRequestsTotal.inc({ status: "disabled", cache_hit: "false" });
         return res.status(410).send("This short link has been disabled.");
       }
 
       if (row.expires_at && new Date(row.expires_at) <= new Date()) {
-        redirectRequestsTotal.inc({ status: "expired", cache_hit: "false" });
         return res.status(410).send("This short link has expired.");
       }
 
@@ -648,8 +566,6 @@ app.get("/:shortCode", async (req, res) => {
       });
     }
 
-    redirectRequestsTotal.inc({ status: "success", cache_hit: String(cacheHit) });
-
     // 3. Extract Metadata & Increment Click Counter
     const metadata = extractClickMetadata(req);
 
@@ -659,7 +575,7 @@ app.get("/:shortCode", async (req, res) => {
     }
 
     if (linkId) {
-      // 1. Synchronously update fast click counters in PostgreSQL before redirecting
+      // Synchronously update fast click counters in PostgreSQL before redirecting
       try {
         await pool.query(
           metadata.isQr
@@ -671,7 +587,7 @@ app.get("/:shortCode", async (req, res) => {
         logger.error("Failed to increment click counter", err);
       }
 
-      // 2. Queue click event for detailed analytics, fallback to direct insert
+      // Queue click event for detailed analytics, fallback to direct insert
       const queued = await addClickJob({ urlId: linkId, metadata });
       if (!queued) {
         pool.query(
@@ -695,7 +611,7 @@ if (require.main === module) {
   ensureSchema()
     .then(() => {
       app.listen(PORT, () => {
-        logger.info(`Enterprise Shortener Server running on http://localhost:${PORT}`);
+        logger.info(`High-Performance Shortener Server running on http://localhost:${PORT}`);
       });
     })
     .catch((err) => {

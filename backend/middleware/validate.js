@@ -23,7 +23,6 @@ const shortenSchema = z.object({
   expires_at: z.string().datetime().nullable().optional(),
   is_private: z.boolean().optional(),
   domain: z.string().optional(),
-  team_id: z.number().int().optional(),
 });
 
 // 3. Edit Link Schema
@@ -34,24 +33,8 @@ const updateLinkSchema = z.object({
   expires_at: z.string().datetime().nullable().optional(),
 });
 
-// 4. API Key Schema
-const createApiKeySchema = z.object({
-  name: z.string().min(2, "Key name must be at least 2 characters").max(50),
-});
-
-// 5. Team Schema
-const createTeamSchema = z.object({
-  name: z.string().min(2, "Team name must be at least 2 characters").max(100),
-});
-
-const addTeamMemberSchema = z.object({
-  email: z.string().email("Valid user email required"),
-  role: z.enum(["owner", "admin", "member"]).default("member"),
-});
-
 /**
  * Middleware factory for Zod validation
- * @param {z.ZodSchema} schema 
  */
 function validateBody(schema) {
   return (req, res, next) => {
@@ -71,7 +54,4 @@ module.exports = {
   loginSchema,
   shortenSchema,
   updateLinkSchema,
-  createApiKeySchema,
-  createTeamSchema,
-  addTeamMemberSchema,
 };

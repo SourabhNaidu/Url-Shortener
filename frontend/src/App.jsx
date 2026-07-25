@@ -5,10 +5,7 @@ import EditLinkModal from "./components/EditLinkModal";
 import AnalyticsTab from "./components/AnalyticsTab";
 import QrCodeTab from "./components/QrCodeTab";
 import BulkCsvTab from "./components/BulkCsvTab";
-import ApiKeysTab from "./components/ApiKeysTab";
-import TeamsTab from "./components/TeamsTab";
-import AuditLogsTab from "./components/AuditLogsTab";
-import { Link2, BarChart2, QrCode, FileText, Key, Users, Activity, Copy, Check, Edit2, Play, Pause, ExternalLink, Plus } from "lucide-react";
+import { Link2, BarChart2, QrCode, FileText, Copy, Check, Edit2, ExternalLink, Plus } from "lucide-react";
 import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL !== undefined 
@@ -193,15 +190,6 @@ export default function App() {
         </button>
         <button className={`tab-btn ${activeTab === "bulk" ? "active" : ""}`} onClick={() => setActiveTab("bulk")}>
           <FileText size={16} /> Bulk CSV Import
-        </button>
-        <button className={`tab-btn ${activeTab === "apikeys" ? "active" : ""}`} onClick={() => setActiveTab("apikeys")}>
-          <Key size={16} /> Developer API Keys
-        </button>
-        <button className={`tab-btn ${activeTab === "teams" ? "active" : ""}`} onClick={() => setActiveTab("teams")}>
-          <Users size={16} /> Teams & Workspaces
-        </button>
-        <button className={`tab-btn ${activeTab === "audit" ? "active" : ""}`} onClick={() => setActiveTab("audit")}>
-          <Activity size={16} /> Audit Trail
         </button>
       </nav>
 
@@ -407,15 +395,6 @@ export default function App() {
 
       {/* TAB CONTENT: Bulk CSV */}
       {activeTab === "bulk" && <BulkCsvTab token={token} apiBase={API_BASE} onLinksCreated={loadDashboard} />}
-
-      {/* TAB CONTENT: API Keys */}
-      {activeTab === "apikeys" && <ApiKeysTab token={token} apiBase={API_BASE} />}
-
-      {/* TAB CONTENT: Teams */}
-      {activeTab === "teams" && <TeamsTab token={token} apiBase={API_BASE} />}
-
-      {/* TAB CONTENT: Audit Logs */}
-      {activeTab === "audit" && <AuditLogsTab token={token} apiBase={API_BASE} />}
 
       {/* Modals */}
       <AuthModal

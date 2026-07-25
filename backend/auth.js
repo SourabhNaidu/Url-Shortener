@@ -1,7 +1,6 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const logger = require("./logger");
-const { logAuditEvent } = require("./middleware/audit");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-only-secret-change-me";
 const JWT_EXPIRES_IN = "7d";
@@ -81,7 +80,6 @@ function registerAuthRoutes(app, pool) {
       const user = result.rows[0];
 
       const token = signToken(user);
-      await logAuditEvent(user.id, "user_signup", "user", user.id);
 
       res.status(201).json({ token, user: { id: user.id, email: user.email, name: user.name } });
     } catch (err) {
@@ -115,7 +113,6 @@ function registerAuthRoutes(app, pool) {
       }
 
       const token = signToken(user);
-      await logAuditEvent(user.id, "user_login", "user", user.id);
 
       res.status(200).json({ token, user: { id: user.id, email: user.email, name: user.name } });
     } catch (err) {
