@@ -70,6 +70,7 @@ async function deleteCachedUrl(shortCode) {
 
 module.exports = {
   redisClient,
+  getRedisClient: () => redisClient,
   isRedisConnected: () => isRedisConnected,
   getCachedUrl,
   setCachedUrl,
