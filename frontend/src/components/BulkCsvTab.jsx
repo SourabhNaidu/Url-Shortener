@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import Papa from "papaparse";
-import { FileText, Upload, Download, CheckCircle, AlertCircle, Shield } from "lucide-react";
+import { FileText, Upload, Download, Shield, Info, HelpCircle } from "lucide-react";
 
 export default function BulkCsvTab({ token, apiBase, onLinksCreated }) {
   const [csvText, setCsvText] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [showGuide, setShowGuide] = useState(false);
 
   if (!token) {
     return (
@@ -36,6 +37,17 @@ export default function BulkCsvTab({ token, apiBase, onLinksCreated }) {
       },
       error: (err) => setError(`CSV Parse error: ${err.message}`),
     });
+  }
+
+  function downloadSampleTemplate() {
+    const sampleCsv = "original_url,custom_alias\nhttps://example.com/summer-sale,summer2026\nhttps://example.com/products/running-shoes,cool-shoes\nhttps://example.com/blog/article-99,\n";
+    const blob = new Blob([sampleCsv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sample_bulk_links_template.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function handleBatchSubmit(e) {
@@ -96,14 +108,37 @@ export default function BulkCsvTab({ token, apiBase, onLinksCreated }) {
 
   return (
     <div className="glass-panel">
-      <div className="panel-header">
+      <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h2 className="panel-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <FileText size={20} color="var(--accent-primary)" /> Bulk Link Creation Workbench
           </h2>
-          <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Upload CSV or paste original_url,custom_alias rows</p>
+          <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+            Upload CSV or paste original_url, custom_alias rows (Up to 50 links per request)
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="btn-secondary" onClick={() => setShowGuide(!showGuide)} style={{ fontSize: "0.8rem", padding: "6px 12px" }}>
+            <HelpCircle size={14} /> {showGuide ? "Hide Format Guide" : "CSV Format Guide"}
+          </button>
+          <button className="btn-secondary" onClick={downloadSampleTemplate} style={{ fontSize: "0.8rem", padding: "6px 12px" }}>
+            <Download size={14} /> Download Sample Template
+          </button>
         </div>
       </div>
+
+      {showGuide && (
+        <div style={{ background: "rgba(59, 130, 246, 0.08)", border: "1px solid rgba(59, 130, 246, 0.2)", borderRadius: "var(--radius-md)", padding: "16px", marginBottom: "20px" }}>
+          <h4 style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.9rem", color: "var(--accent-primary)", marginBottom: "8px" }}>
+            <Info size={16} /> CSV Format Guidelines:
+          </h4>
+          <ul style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginLeft: "20px", lineHeight: "1.6" }}>
+            <li><strong>Header Row (Recommended):</strong> Column 1 should be named <code>original_url</code> (or <code>url</code>) and Column 2 named <code>custom_alias</code> (or <code>alias</code>).</li>
+            <li><strong>Multi-Column CSV Support:</strong> If your CSV has extra columns (e.g., <em>product_id, price, stock</em>), any non-matching columns are safely ignored.</li>
+            <li><strong>Optional Custom Alias:</strong> Leaving <code>custom_alias</code> blank will auto-generate a Base62 short code.</li>
+          </ul>
+        </div>
+      )}
 
       {error && <div style={{ color: "var(--accent-danger)", fontSize: "0.9rem", marginBottom: "16px" }}>{error}</div>}
 
@@ -115,8 +150,8 @@ export default function BulkCsvTab({ token, apiBase, onLinksCreated }) {
                 <Upload size={14} /> Upload CSV File
               </label>
               <input type="file" accept=".csv" className="form-input" onChange={handleFileUpload} />
-              <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "4px" }}>
-                Columns: original_url, custom_alias
+              <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "6px" }}>
+                Accepts <code>.csv</code> files. <a href="#guide" onClick={(e) => { e.preventDefault(); downloadSampleTemplate(); }} style={{ color: "var(--accent-primary)" }}>Download template</a>
               </p>
             </div>
           </div>
